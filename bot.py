@@ -1,5 +1,6 @@
-import discord
 import os
+import re
+
 import aiohttp
 import re
 from dotenv import load_dotenv
@@ -105,51 +106,93 @@ def collect_media_candidates(message):
 
 async def analyze_image_for_hamster(image_url):
     """Sends the image URL to OpenRouter's vision model."""
+    if not OPENROUTER_API_KEY:
+        print("Error: OPENROUTER_API_KEY is missing; skipping vision check.")
+        return False
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
-    
+
     # Payload asking the AI to check the image
     payload = {
-        "model": "openai/gpt-4o-mini", # Fast, cheap, and good at vision
+        "model": "openai/gpt-4o-mini",  # Fast, cheap, and good at vision
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Determine if there is a hamster in this image. This includes real, cartoon, anime, or highly stylized anthropomorphic characters. Look closely for specific visual cues like small, circular ears, a round body shape, or classic hamster color patches. Answer strictly with one word: YES or NO."},
-                    {"type": "image_url", "image_url": {"url": image_url}}
-                ]
+                    {
+                        "type": "text",
+                        "text": "Determine if there is a hamster in this image. This includes real, cartoon, anime, or highly stylized anthropomorphic characters. Look closely for specific visual cues like small, circular ears, a round body shape, or classic hamster color patches. Answer strictly with one word: YES or NO.",
+                    },
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
             }
-        ]
+        ],
     }
-    
+
     async with aiohttp.ClientSession() as session:
         # Send request to OpenRouter
-        async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as resp:
+        async with session.post(
+            "https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload
+        ) as resp:
             if resp.status != 200:
-                print(f"Error from OpenRouter: {resp.status}")
+                body = await resp.text()
+                print(f"Error from OpenRouter: {resp.status} | {body[:300]}")
                 return False
-            
+
             data = await resp.json()
-            
+
             try:
                 # Dig out the AI's response text
-                answer = data['choices'][0]['message']['content'].strip().upper()
+                answer = data["choices"][0]["message"]["content"].strip().upper()
                 print(f"AI sees: {answer}")
-                return "YES" in answer
+                first_token = re.sub(r"[^A-Z]", " ", answer).split()
+                return bool(first_token) and first_token[0] == "YES"
             except (KeyError, IndexError):
                 print("Failed to parse AI response.")
                 return False
 
+
+async def delete_hamster_message(message):
+    """Delete detected hamster message with clear failure reasons."""
+    try:
+        await message.delete()
+        return True
+    except discord.Forbidden as exc:
+        print(
+            "Error: Missing permission to delete message "
+            f"in #{message.channel} ({message.guild}): {exc}"
+        )
+    except discord.NotFound:
+        # Message was likely removed by a moderator/bot while we were processing it.
+        print("Message already deleted before bot action completed.")
+    except discord.HTTPException as exc:
+        print(f"Discord API error while deleting message: {exc}")
+
+    return False
+
+
+async def notify_hamster_deleted(message):
+    """Send user feedback after deletion without masking delete success."""
+    try:
+        await message.channel.send(f"🚨 {message.author.mention}, hamster detected and deleted! 🚨")
+    except discord.Forbidden as exc:
+        print(f"Deleted message but cannot send confirmation in this channel: {exc}")
+    except discord.HTTPException as exc:
+        print(f"Deleted message but failed to send confirmation: {exc}")
+
+
 @client.event
 async def on_ready():
-    print(f'Logged in as {client.user} - Ready to terminate hamsters.')
+    print(f"Logged in as {client.user} - Ready to terminate hamsters.")
+
 
 @client.event
 async def on_message(message):
     # Ignore messages from the bot itself
-    if message.author == client.user:
+    if message.author == client.user or message.author.bot:
         return
 
     media_candidates = collect_media_candidates(message)
