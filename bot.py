@@ -2,7 +2,7 @@ import os
 import re
 
 import aiohttp
-import discord
+import re
 from dotenv import load_dotenv
 
 # Load the keys from your .env file
@@ -20,24 +20,6 @@ HAMSTER_KEYWORDS = {
     "hammy",
     "hamtaro",
 }
-
-IMAGE_URL_EXTENSIONS = (
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".gif",
-    ".bmp",
-)
-
-VIDEO_URL_EXTENSIONS = (
-    ".mp4",
-    ".mov",
-    ".webm",
-    ".mkv",
-    ".avi",
-    ".m3u8",
-)
 
 
 def _extract_strings(value):
@@ -68,105 +50,59 @@ def metadata_indicates_hamster(*parts):
     if any(keyword in searchable_text for keyword in HAMSTER_KEYWORDS):
         return True
 
-    # Common meme misspelling: "hampter"
     return "hampter" in tokens
-
-
-def is_image_candidate(media_url, content_type, is_video_embed=False):
-    """Returns True when media is image-compatible for image_url vision input."""
-    if is_video_embed:
-        return False
-
-    lowered_url = (media_url or "").lower()
-    lowered_content_type = (content_type or "").lower()
-
-    if not lowered_url.startswith(("http://", "https://")):
-        return False
-
-    if lowered_content_type.startswith("image/"):
-        return True
-    if lowered_content_type.startswith("video/"):
-        return False
-
-    url_without_query = lowered_url.split("?", 1)[0]
-    if url_without_query.endswith(VIDEO_URL_EXTENSIONS):
-        return False
-
-    return url_without_query.endswith(IMAGE_URL_EXTENSIONS)
 
 
 def collect_media_candidates(message):
     """Collect all media URLs and cheap metadata from a Discord message."""
     candidates = []
-    seen_urls = set()
 
     for attachment in message.attachments:
-        media_url = attachment.url
-        if not media_url or media_url in seen_urls:
-            continue
-
-        candidates.append(
-            {
-                "url": media_url,
-                "content_type": attachment.content_type,
-                "is_video_embed": False,
-                "metadata": [
-                    message.content,
-                    attachment.filename,
-                    attachment.description,
-                    attachment.proxy_url,
-                    attachment.content_type,
-                ],
-            }
-        )
-        seen_urls.add(media_url)
+        if attachment.content_type and attachment.content_type.startswith(('image/', 'video/')):
+            candidates.append(
+                {
+                    "url": attachment.url,
+                    "metadata": [
+                        message.content,
+                        attachment.filename,
+                        attachment.description,
+                        attachment.proxy_url,
+                        attachment.content_type,
+                    ],
+                }
+            )
 
     for embed in message.embeds:
-        if embed.type not in ["gifv", "image", "video", "rich"]:
-            continue
+        if embed.type in ['gifv', 'image', 'video', 'rich']:
+            media_url = None
+            if embed.video:
+                media_url = embed.video.url
+            elif embed.image:
+                media_url = embed.image.url
+            elif embed.thumbnail:
+                media_url = embed.thumbnail.url
+            elif embed.url:
+                media_url = embed.url
 
-        media_url = None
-        is_video_embed = False
-        # Prefer image-like URLs first to avoid sending video links into image_url vision inputs.
-        if embed.image:
-            media_url = embed.image.url
-        elif embed.thumbnail:
-            media_url = embed.thumbnail.url
-        elif embed.video:
-            media_url = embed.video.url
-            is_video_embed = True
-        elif embed.url:
-            media_url = embed.url
-            is_video_embed = embed.type == "video"
-
-        if not media_url:
-            continue
-
-        if media_url in seen_urls:
-            continue
-
-        candidates.append(
-            {
-                "url": media_url,
-                "content_type": None,
-                "is_video_embed": is_video_embed,
-                "metadata": [
-                    message.content,
-                    embed.title,
-                    embed.description,
-                    embed.url,
-                    embed.type,
-                    embed.provider.name if embed.provider else None,
-                    embed.author.name if embed.author else None,
-                    embed.footer.text if embed.footer else None,
-                    embed.to_dict(),
-                ],
-            }
-        )
-        seen_urls.add(media_url)
+            if media_url:
+                candidates.append(
+                    {
+                        "url": media_url,
+                        "metadata": [
+                            message.content,
+                            embed.title,
+                            embed.description,
+                            embed.url,
+                            embed.type,
+                            embed.provider.name if embed.provider else None,
+                            embed.author.name if embed.author else None,
+                            embed.footer.text if embed.footer else None,
+                            embed.to_dict(),
+                        ],
+                    }
+                )
 
     return candidates
-
 
 async def analyze_image_for_hamster(image_url):
     """Sends the image URL to OpenRouter's vision model."""
@@ -262,27 +198,23 @@ async def on_message(message):
     media_candidates = collect_media_candidates(message)
 
     for candidate in media_candidates:
-        media_url = candidate["url"]
-        content_type = candidate["content_type"]
+        image_url_to_check = candidate["url"]
         metadata = candidate["metadata"]
-        is_video_embed = candidate["is_video_embed"]
 
         if metadata_indicates_hamster(*metadata):
-            print(f"Metadata hit for hamster from {message.author}: {media_url}")
+            print(f"Metadata hit for hamster from {message.author}: {image_url_to_check}")
             is_hamster = True
-        elif is_image_candidate(media_url, content_type, is_video_embed):
-            print(f"Checking image media from {message.author}: {media_url}")
-            is_hamster = await analyze_image_for_hamster(media_url)
         else:
-            # Avoid paid call + 400s by skipping non-image media in image_url flow.
-            print(f"Skipping non-image media from {message.author}: {media_url}")
-            is_hamster = False
+            print(f"Checking media from {message.author}: {image_url_to_check}")
+            is_hamster = await analyze_image_for_hamster(image_url_to_check)
 
         if is_hamster:
-            deleted = await delete_hamster_message(message)
-            if deleted:
-                await notify_hamster_deleted(message)
-            return
-
+            try:
+                await message.delete()
+                await message.channel.send(f"🚨 {message.author.mention}, hamster detected and deleted! 🚨")
+                return
+            except discord.Forbidden:
+                print("Error: Bot doesn't have permission to delete messages in this channel.")
+                return
 
 client.run(TOKEN)
