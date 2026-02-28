@@ -42,7 +42,7 @@ class GrokSummarizer(discord.Client):
             "messages": [
                 {
                     "role": "system", 
-                    "content": "Read the following chat history and provide a concise, readable summary of the conversation. Focus on the main topics, any conclusions reached, and keep the tone casual."
+                    "content": "Read the following chat history and provide a concise, readable summary of the conversation. Focus on the main topics and any conclusions reached in 3 sentences max."
                 },
                 {
                     "role": "user", 
