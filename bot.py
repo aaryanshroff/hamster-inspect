@@ -1,8 +1,12 @@
 import discord
 import os
+import re
 import aiohttp
 import asyncio
 from dotenv import load_dotenv
+
+# Match http(s) URLs in text; trailing punctuation is stripped when collecting (see on_message).
+URL_IN_TEXT_RE = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
 
 # Load the keys from your .env file
 load_dotenv()
@@ -51,17 +55,8 @@ async def analyze_image_for_hamster(session: aiohttp.ClientSession, image_url: s
             print(f"AI sees: {answer}")
             return "YES" in answer
 
-    except asyncio.TimeoutError:
-        print("Timeout: Contacting OpenRouter took too long.")
-        return False
-    except aiohttp.ClientError as e:
-        print(f"Network error occurred: {e}")
-        return False
-    except (KeyError, IndexError) as e:
-        print(f"Failed to parse AI response. Missing expected data fields: {e}")
-        return False
     except Exception as e:
-        print(f"An unexpected error occurred during image analysis: {e}")
+        print(f"Image analysis failed: {type(e).__name__}: {e}")
         return False
 
 
@@ -109,15 +104,13 @@ class HamsterBot(discord.Client):
         if message.author == self.user:
             return
 
-        # 1. Fast-Path: Check the actual message text first
-        text_lower = message.content.lower()
-        if text_lower.startswith(('http://', 'https://')) and any(word in text_lower for word in self.forbidden_words):
-            print(f"Message text triggered deletion: {message.author}, {text_lower}")
-            await self._delete_and_warn(message)
-            return
-
-        # 2. Collect ALL potential image URLs to prevent the "Trojan Hamster" exploit
+        # 1. Collect ALL potential image URLs (from text, attachments, embeds) to scan
         urls_to_check = []
+
+        # URLs in message text (any position)
+        if message.content:
+            for url in URL_IN_TEXT_RE.findall(message.content):
+                urls_to_check.append(url.rstrip('.,;:)\]\}'))
 
         # Attachments
         for attachment in message.attachments:
@@ -131,7 +124,7 @@ class HamsterBot(discord.Client):
                 if url:
                     urls_to_check.append(url)
 
-        # 3. Process the collected URLs
+        # 2. Process the collected URLs
         for url in urls_to_check:
             url_lower = url.lower()
             
@@ -145,7 +138,7 @@ class HamsterBot(discord.Client):
             print(f"URL seems clean, scanning image pixels from {message.author}...")
             is_hamster = await analyze_image_for_hamster(self.session, url)
 
-            # 4. Execute the deletion if AI detects a hamster
+            # 3. Execute the deletion if AI detects a hamster
             if is_hamster:
                 await self._delete_and_warn(message)
                 return # Stop looping through remaining images, message is gone
